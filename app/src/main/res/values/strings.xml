@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NFC Reproducer</string>
+    <string name="scanning_ready">Ready — bring an NFC tag near the phone</string>
+    <string name="no_tag_scanned">No tag scanned</string>
+    <string name="save_button">Save scanned tag</string>
+    <string name="saved_tags">Saved tags</string>
+    <string name="reproduce_instructions">To reproduce: select Write, then hold a writable blank NDEF tag to the back of the phone. Secure/proprietary tags cannot be cloned by Android.</string>
+    <string name="write_button">Write</string>
+    <string name="delete_button">Delete</string>
+    <string name="nfc_disabled">NFC is disabled — enable it in Settings</string>
+    <string name="no_nfc_support">This device does not support NFC</string>
+</resources>
