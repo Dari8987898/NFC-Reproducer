@@ -1,0 +1,160 @@
+package com.example.nfcreproducer
+
+import android.nfc.cardemulation.HostApduService
+import android.os.Bundle
+
+/**
+ * Exposes the selected badge through Android Host Card Emulation.
+ *
+ * Two ISO-DEP applications are supported:
+ * - NFC Forum Type 4 NDEF, for saved tags that contain NDEF data.
+ * - NFC Reproducer custom AID, which exposes a deterministic snapshot of the
+ *   readable MIFARE data blocks through GET DATA and READ BINARY APDUs.
+ *
+ * HCE cannot emulate the MIFARE Classic radio protocol, UID or Crypto1. The
+ * custom AID therefore requires an ISO-DEP-capable reader and corresponding
+ * support in the attendance program.
+ */
+class NdefHostApduService : HostApduService() {
+    private enum class SelectedApplication { NONE, CUSTOM, NDEF }
+
+    private var selectedApplication = SelectedApplication.NONE
+    private var selectedNdefFile = 0
+
+    override fun processCommandApdu(commandApdu: ByteArray, extras: Bundle?): ByteArray {
+        val active = EmulationState.getActive(this) ?: return status(SW_CONDITIONS_NOT_SATISFIED)
+
+        if (isSelectAid(commandApdu, CUSTOM_AID)) {
+            selectedApplication = SelectedApplication.CUSTOM
+            selectedNdefFile = 0
+            return status(SW_OK)
+        }
+
+        if (isSelectAid(commandApdu, NDEF_AID)) {
+            if (active.rawNdef == null) return status(SW_FILE_NOT_FOUND)
+            selectedApplication = SelectedApplication.NDEF
+            selectedNdefFile = 0
+            return status(SW_OK)
+        }
+
+        return when (selectedApplication) {
+            SelectedApplication.CUSTOM -> processCustom(commandApdu, active)
+            SelectedApplication.NDEF -> processNdef(commandApdu, active.rawNdef ?: return status(SW_FILE_NOT_FOUND))
+            SelectedApplication.NONE -> status(SW_CONDITIONS_NOT_SATISFIED)
+        }
+    }
+
+    private fun processCustom(command: ByteArray, active: TagInfo): ByteArray {
+        val payload = active.toHcePayload()
+
+        // Proprietary GET DATA: 80 CA 00 00 Le
+        // Response: protocol version, payload flags, payload length (u16).
+        if (command.hasHeader(0x80, 0xCA, 0x00, 0x00)) {
+            val flags = (if (active.mifareDump?.blocks?.isNotEmpty() == true) TagInfo.FLAG_MIFARE else 0) or
+                (if (active.rawNdef != null) TagInfo.FLAG_NDEF else 0)
+            return withStatus(
+                byteArrayOf(
+                    0x01,
+                    flags.toByte(),
+                    (payload.size shr 8).toByte(),
+                    payload.size.toByte()
+                )
+            )
+        }
+
+        return readBinary(command, payload)
+    }
+
+    private fun processNdef(command: ByteArray, ndef: ByteArray): ByteArray {
+        if (isSelectFile(command, CC_FILE_ID)) {
+            selectedNdefFile = FILE_CC
+            return status(SW_OK)
+        }
+        if (isSelectFile(command, NDEF_FILE_ID)) {
+            selectedNdefFile = FILE_NDEF
+            return status(SW_OK)
+        }
+
+        val selectedData = when (selectedNdefFile) {
+            FILE_CC -> buildCapabilityContainer(ndef.size)
+            FILE_NDEF -> byteArrayOf((ndef.size shr 8).toByte(), ndef.size.toByte()) + ndef
+            else -> return status(SW_CONDITIONS_NOT_SATISFIED)
+        }
+        return readBinary(command, selectedData)
+    }
+
+    private fun readBinary(command: ByteArray, data: ByteArray): ByteArray {
+        if (command.size < 5 || command[0] != 0x00.toByte() || command[1] != 0xB0.toByte()) {
+            return status(SW_INS_NOT_SUPPORTED)
+        }
+        val offset = ((command[2].toInt() and 0xFF) shl 8) or (command[3].toInt() and 0xFF)
+        if (offset >= data.size) return status(SW_WRONG_P1P2)
+        val requested = (command[4].toInt() and 0xFF).let { if (it == 0) 256 else it }
+        val end = (offset + requested).coerceAtMost(data.size)
+        return withStatus(data.copyOfRange(offset, end))
+    }
+
+    override fun onDeactivated(reason: Int) {
+        selectedApplication = SelectedApplication.NONE
+        selectedNdefFile = 0
+    }
+
+    companion object {
+        val CUSTOM_AID: ByteArray = hex("F04E464352455001")
+        private val NDEF_AID = hex("D2760000850101")
+        private val CC_FILE_ID = hex("E103")
+        private val NDEF_FILE_ID = hex("E104")
+
+        private const val FILE_CC = 1
+        private const val FILE_NDEF = 2
+        private const val SW_OK = 0x9000
+        private const val SW_CONDITIONS_NOT_SATISFIED = 0x6985
+        private const val SW_FILE_NOT_FOUND = 0x6A82
+        private const val SW_WRONG_P1P2 = 0x6B00
+        private const val SW_INS_NOT_SUPPORTED = 0x6D00
+
+        private fun buildCapabilityContainer(ndefSize: Int): ByteArray {
+            val maxSize = ndefSize.coerceAtMost(0xFFFF)
+            return byteArrayOf(
+                0x00, 0x0F,
+                0x20,
+                0x00, 0x3B,
+                0x00, 0x34,
+                0x04, 0x06,
+                0xE1.toByte(), 0x04,
+                (maxSize shr 8).toByte(), maxSize.toByte(),
+                0x00,
+                0xFF.toByte()
+            )
+        }
+
+        private fun isSelectAid(command: ByteArray, aid: ByteArray): Boolean {
+            if (!command.hasHeader(0x00, 0xA4, 0x04, 0x00) || command.size < 5) return false
+            val length = command[4].toInt() and 0xFF
+            if (length != aid.size || command.size < 5 + length) return false
+            return command.copyOfRange(5, 5 + length).contentEquals(aid)
+        }
+
+        private fun isSelectFile(command: ByteArray, fileId: ByteArray): Boolean {
+            if (!command.hasHeader(0x00, 0xA4, 0x00, 0x0C) || command.size < 7) return false
+            return (command[4].toInt() and 0xFF) == fileId.size &&
+                command.copyOfRange(5, 5 + fileId.size).contentEquals(fileId)
+        }
+
+        private fun ByteArray.hasHeader(cla: Int, ins: Int, p1: Int, p2: Int): Boolean =
+            size >= 4 &&
+                this[0] == cla.toByte() &&
+                this[1] == ins.toByte() &&
+                this[2] == p1.toByte() &&
+                this[3] == p2.toByte()
+
+        private fun hex(value: String): ByteArray =
+            value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+        private fun status(statusWord: Int): ByteArray =
+            byteArrayOf((statusWord shr 8).toByte(), statusWord.toByte())
+
+        private fun withStatus(data: ByteArray, statusWord: Int = SW_OK): ByteArray =
+            data + status(statusWord)
+    }
+}
