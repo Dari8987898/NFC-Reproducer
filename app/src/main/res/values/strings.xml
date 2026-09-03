@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Badge NFC</string>
-    <string name="app_subtitle">Leggi il tuo badge e rendilo disponibile dal telefono</string>
+    <string name="app_subtitle">Badge Android HCE per lettori StrongLink SL500A/F</string>
     <string name="nfc_status_title">STATO NFC</string>
     <string name="latest_scan_title">Ultima lettura</string>
     <string name="saved_tags">Badge salvati</string>
@@ -50,5 +50,5 @@
     <string name="detail_no_ndef">Contenuto NDEF: assente</string>
     <string name="detail_records">Record:\n%1$s</string>
     <string name="binary_record">Record binario (%1$d byte)</string>
-    <string name="hce_compatibility_note">Compatibilità: Android trasmette tramite HCE/ISO-DEP. Non può imitare direttamente il protocollo MIFARE Classic o il suo UID. Il lettore e il programma di timbratura devono supportare il protocollo APDU descritto nel README.</string>
+    <string name="hce_compatibility_note">Compatibilità SL500: la modalità telefono richiede SL500A o SL500F e l’uso di rf_typea_rst/rf_cos_command nel programma. SL500L non supporta carte ISO14443A-4 e non può rilevare Android HCE.</string>
 </resources>

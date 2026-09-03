@@ -1,6 +1,6 @@
 # Badge NFC
 
-Applicazione Android in Kotlin per acquisire un badge NFC autorizzato e renderne i dati disponibili dal telefono tramite Host Card Emulation (HCE).
+Applicazione Android in Kotlin per acquisire un badge NFC autorizzato e renderne i dati disponibili dal telefono tramite Host Card Emulation (HCE). Questa versione include l'integrazione specifica per i lettori **StrongLink SL500A/SL500F**.
 
 ## Funzioni
 
@@ -16,6 +16,8 @@ Applicazione Android in Kotlin per acquisire un badge NFC autorizzato e renderne
 - Selezione di un badge da rendere attivo tramite Android HCE.
 - Emulazione NFC Forum Type 4 per i contenuti NDEF.
 - Protocollo HCE/APDU dedicato per fornire al programma di timbratura i blocchi acquisiti.
+- Lettura diretta di un blocco MIFARE salvato tramite un singolo comando APDU, pensata per lo SDK SL500.
+- Adattatore C# per `MasterRD.dll` in `integrations/sl500/Sl500HceClient.cs`.
 
 I dati restano nelle preferenze private dell'app. Il backup Android è disattivato e il servizio HCE richiede che il telefono sia sbloccato.
 
@@ -41,6 +43,27 @@ Android HCE non può comportarsi come una carta MIFARE Classic a livello radio. 
 
 Il badge MIFARE viene quindi acquisito come insieme di blocchi e reso disponibile attraverso una carta virtuale **ISO-DEP/APDU**. Il lettore esistente deve supportare ISO-DEP e il programma di timbratura deve selezionare l'AID descritto sotto. Un lettore configurato esclusivamente per MIFARE Classic non rileverà il telefono, indipendentemente dal codice dell'app.
 
+## Compatibilità StrongLink SL500
+
+La sigla SL500 identifica una famiglia, non un singolo lettore:
+
+| Variante | Protocolli utili | Telefono Android HCE |
+| --- | --- | --- |
+| SL500L | MIFARE Classic/Ultralight | Non compatibile |
+| SL500A | ISO14443A e Mifare_ProX/Type A-4 | Compatibile tramite APDU |
+| SL500D | ISO15693 | Non compatibile |
+| SL500F | ISO14443A/B/15693 e carte Type A-4 | Compatibile tramite APDU, se abilitato nel firmware |
+
+Per SL500A/F il programma di timbratura deve usare:
+
+```text
+rf_init_type('A') → rf_typea_rst(0x52) → rf_cos_command(APDU)
+```
+
+Il normale percorso `rf_request`/`rf_M1_authentication`/`rf_M1_read` deve rimanere disponibile per i badge fisici. Il percorso HCE è separato perché il telefono viene rilevato come carta ISO14443A-4, non come MIFARE Classic.
+
+Un adattatore C# pronto da integrare è disponibile in [`integrations/sl500`](integrations/sl500/README.md). Usa le funzioni ufficiali `rf_get_model`, `rf_init_type`, `rf_typea_rst`, `rf_cos_command` e `rf_cl_deselect` della `MasterRD.dll`.
+
 ## Protocollo HCE per il programma di timbratura
 
 ### AID
@@ -54,7 +77,7 @@ F04E464352455001
 Comando:
 
 ```text
-00 A4 04 00 08 F0 4E 46 43 52 45 50 01 00
+00 A4 04 00 08 F0 4E 46 43 52 45 50 01
 ```
 
 Risposta positiva:
@@ -75,13 +98,34 @@ Risposta prima di `90 00`:
 
 | Byte | Contenuto |
 | --- | --- |
-| 0 | Versione protocollo, attualmente `01` |
+| 0 | Versione protocollo, attualmente `02` |
 | 1 | Flag: bit 0 = blocchi MIFARE, bit 1 = NDEF |
 | 2–3 | Lunghezza totale del payload, big endian |
+| 4–5 | Numero di blocchi MIFARE acquisiti, big endian |
 
-### 3. Lettura del payload
+### 3. UID del badge originale
 
-Usare `READ BINARY` in blocchi fino a 256 byte:
+Comando:
+
+```text
+80 CA 01 00 00
+```
+
+La risposta contiene l'UID acquisito dal badge fisico, seguito da `90 00`. L'UID radio generato da Android non deve essere usato per identificare il dipendente.
+
+### 4. Lettura diretta di un blocco MIFARE salvato
+
+Comando, con indirizzo assoluto del blocco in `P1/P2`:
+
+```text
+80 B0 BLOCK_H BLOCK_L 10
+```
+
+La risposta contiene i 16 byte originali seguiti da `90 00`. Se il blocco non è stato acquisito, viene restituito `6A 83`. Questo è il comando consigliato per adattare un programma che in precedenza chiamava `rf_M1_read`.
+
+### 5. Lettura dell'intero payload
+
+Usare `READ BINARY` in blocchi fino a 240 byte, così dati e `SW1/SW2` restano entro il limite a un byte dello SDK SL500:
 
 ```text
 00 B0 OFFSET_H OFFSET_L LE
@@ -137,8 +181,10 @@ L'APK debug viene generato in `app/build/outputs/apk/debug/app-debug.apk`.
 
 1. Verificare che l'app legga tutti i settori attesi del badge.
 2. Controllare nel riepilogo eventuali settori non leggibili.
-3. Provare la selezione dell'AID HCE con uno smartphone o un lettore ISO-DEP noto.
-4. Solo dopo, integrare i comandi APDU nel programma di timbratura.
-5. Provare il lettore a muro: se non seleziona l'AID, l'hardware o il firmware non supporta questa modalità e va sostituito o riconfigurato.
+3. Eseguire `rf_get_model` dal programma collegato al lettore e verificare che sia SL500A/F.
+4. Attivare il telefono con `rf_typea_rst`, poi selezionare l'AID con `rf_cos_command`.
+5. Leggere direttamente il blocco che contiene il codice dipendente con `80 B0`.
+6. Conservare il vecchio percorso MIFARE come fallback per i badge fisici.
+7. Se `rf_typea_rst` non rileva il telefono sbloccato, la variante o il firmware non supporta HCE.
 
 Usare esclusivamente badge personali e sistemi per i quali si dispone di autorizzazione.

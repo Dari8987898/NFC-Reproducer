@@ -87,6 +87,8 @@ data class TagInfo(
         put("scannedAt", scannedAt)
     }
 
+    fun uidBytes(): ByteArray = id.hexToBytes()
+
     /**
      * Creates the payload exposed by the custom HCE application.
      *
@@ -96,7 +98,7 @@ data class TagInfo(
      * ndefLength (u16) | ndef
      */
     fun toHcePayload(): ByteArray {
-        val uid = id.hexToBytes()
+        val uid = uidBytes()
         val blocks = mifareDump?.blocks.orEmpty().sortedWith(compareBy({ it.sector }, { it.block }))
         val ndef = rawNdef?.let { it.copyOfRange(0, it.size.coerceAtMost(0xFFFF)) }
             ?: ByteArray(0)
